@@ -1,1 +1,1 @@
-worker: python poster_bot.py
+web: gunicorn poster_bot:app
