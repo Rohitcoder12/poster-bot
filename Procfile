@@ -1,0 +1,1 @@
+worker: python poster_bot.py
