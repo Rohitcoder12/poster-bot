@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: blogger-poster-bot # You can change this name if you like
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn poster_bot:app"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
