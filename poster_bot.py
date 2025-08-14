@@ -1,6 +1,7 @@
 import os
 import logging
-import requests # <-- Import requests
+import requests
+import re # --- NEW: Import re for link processing ---
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import (
@@ -22,7 +23,6 @@ LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
-# --- NEW: ImageBB API Key ---
 IMAGEBB_API_KEY = os.environ.get("IMAGEBB_API_KEY")
 
 
@@ -49,7 +49,6 @@ def get_blogger_service():
         logger.error(f"Failed to build Google service: {e}")
         return None
 
-# --- NEW: Function to upload image to ImageBB ---
 def upload_to_imagebb(image_path):
     if not IMAGEBB_API_KEY:
         logger.warning("IMAGEBB_API_KEY not set. Cannot upload image.")
@@ -57,15 +56,11 @@ def upload_to_imagebb(image_path):
     
     upload_url = "https://api.imgbb.com/1/upload"
     with open(image_path, "rb") as image_file:
-        payload = {
-            "key": IMAGEBB_API_KEY,
-        }
-        files = {
-            "image": image_file
-        }
+        payload = {"key": IMAGEBB_API_KEY}
+        files = {"image": image_file}
         try:
             response = requests.post(upload_url, params=payload, files=files)
-            response.raise_for_status() # Raise an exception for bad status codes
+            response.raise_for_status()
             json_response = response.json()
             if json_response.get("success"):
                 return json_response["data"]["url"]
@@ -106,18 +101,22 @@ def get_caption(update: Update, context: CallbackContext) -> int:
             send_log("❌ FATAL ERROR! Could not build Google Blogger service. Check credentials.")
             return ConversationHandler.END
 
-        caption = context.user_data['caption']
+        caption_text = context.user_data['caption']
         photo_path = context.user_data['photo_path']
 
-        # --- MODIFIED: Upload photo and build HTML ---
+        # --- NEW: Process the caption to make links clickable ---
+        # This regex finds URLs and wraps them in <a href="...">...</a> tags
+        caption_with_links = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', caption_text)
+        # This converts newline characters into HTML line breaks
+        final_caption_html = caption_with_links.replace(os.linesep, "<br>")
+
+        # --- MODIFIED: Upload photo and build final HTML ---
         image_url = upload_to_imagebb(photo_path)
         if image_url:
-            # If upload is successful, create HTML with the image
-            body_html = f'<img src="{image_url}" /><br /><p>{caption.replace(os.linesep, "<br>")}</p>'
+            body_html = f'<img src="{image_url}" /><br /><p>{final_caption_html}</p>'
             send_log(f"📸 Image successfully uploaded to ImageBB: {image_url}")
         else:
-            # If upload fails, post text only as a fallback
-            body_html = f'<p>{caption.replace(os.linesep, "<br>")}</p>'
+            body_html = f'<p>{final_caption_html}</p>'
             send_log(f"⚠️ ImageBB upload failed. Posting text only.")
         
         body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
@@ -126,7 +125,7 @@ def get_caption(update: Update, context: CallbackContext) -> int:
         
         update.message.reply_text(f"Success! Post '{title}' published.")
         send_log(f"✅ Success! Post '{title}' published by {update.effective_user.first_name}.")
-        os.remove(photo_path) # Clean up the temporary local file
+        os.remove(photo_path)
 
     except Exception as e:
         update.message.reply_text(f"An error occurred: {e}")
@@ -139,7 +138,7 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
 
-# --- FLASK WEB SERVER SETUP (No changes from here down) ---
+# --- FLASK WEB SERVER SETUP ---
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
