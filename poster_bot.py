@@ -40,7 +40,7 @@ def get_blogger_service():
     """Builds the Blogger service object from environment variables."""
     try:
         creds = Credentials(
-            token=None,  # No access token needed, it will be refreshed
+            token=None,
             refresh_token=GOOGLE_REFRESH_TOKEN,
             token_uri="https://oauth2.googleapis.com/token",
             client_id=GOOGLE_CLIENT_ID,
@@ -109,6 +109,7 @@ def cancel(update: Update, context: CallbackContext) -> int:
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
+# THE ONLY CHANGE IS IN THIS BLOCK: persistent=True is removed.
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
@@ -117,7 +118,7 @@ conv_handler = ConversationHandler(
         GET_CAPTION: [MessageHandler(Filters.text & ~Filters.command, get_caption)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
-    persistent=True, name="blogger_conversation"
+    name="blogger_conversation"
 )
 dispatcher.add_handler(conv_handler)
 
