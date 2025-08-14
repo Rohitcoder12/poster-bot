@@ -1,5 +1,6 @@
 import os
 import logging
+import requests # <-- Import requests
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import (
@@ -21,6 +22,9 @@ LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
+# --- NEW: ImageBB API Key ---
+IMAGEBB_API_KEY = os.environ.get("IMAGEBB_API_KEY")
+
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -29,29 +33,46 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
 
 def send_log(message: str):
-    """Sends a message to the log channel if it's configured."""
     if LOG_CHANNEL_ID:
-        try:
-            bot.send_message(chat_id=LOG_CHANNEL_ID, text=message)
-        except Exception as e:
-            logger.error(f"Failed to send log message: {e}")
+        try: bot.send_message(chat_id=LOG_CHANNEL_ID, text=message)
+        except Exception as e: logger.error(f"Failed to send log message: {e}")
 
 def get_blogger_service():
-    """Builds the Blogger service object from environment variables."""
     try:
         creds = Credentials(
-            token=None,
-            refresh_token=GOOGLE_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=GOOGLE_CLIENT_ID,
-            client_secret=GOOGLE_CLIENT_SECRET,
-            scopes=['https://www.googleapis.com/auth/blogger']
+            token=None, refresh_token=GOOGLE_REFRESH_TOKEN, token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_CLIENT_ID, client_secret=GOOGLE_CLIENT_SECRET, scopes=['https://www.googleapis.com/auth/blogger']
         )
         service = build('blogger', 'v3', credentials=creds)
         return service
     except Exception as e:
         logger.error(f"Failed to build Google service: {e}")
         return None
+
+# --- NEW: Function to upload image to ImageBB ---
+def upload_to_imagebb(image_path):
+    if not IMAGEBB_API_KEY:
+        logger.warning("IMAGEBB_API_KEY not set. Cannot upload image.")
+        return None
+    
+    upload_url = "https://api.imgbb.com/1/upload"
+    with open(image_path, "rb") as image_file:
+        payload = {
+            "key": IMAGEBB_API_KEY,
+        }
+        files = {
+            "image": image_file
+        }
+        try:
+            response = requests.post(upload_url, params=payload, files=files)
+            response.raise_for_status() # Raise an exception for bad status codes
+            json_response = response.json()
+            if json_response.get("success"):
+                return json_response["data"]["url"]
+        except requests.RequestException as e:
+            logger.error(f"ImageBB upload failed: {e}")
+            return None
+    return None
 
 # --- BOT HANDLERS ---
 GET_TITLE, GET_PHOTO, GET_CAPTION = range(3)
@@ -87,13 +108,26 @@ def get_caption(update: Update, context: CallbackContext) -> int:
 
         caption = context.user_data['caption']
         photo_path = context.user_data['photo_path']
-        body_html = f"<p>{caption.replace(os.linesep, '<br>')}</p>"
+
+        # --- MODIFIED: Upload photo and build HTML ---
+        image_url = upload_to_imagebb(photo_path)
+        if image_url:
+            # If upload is successful, create HTML with the image
+            body_html = f'<img src="{image_url}" /><br /><p>{caption.replace(os.linesep, "<br>")}</p>'
+            send_log(f"📸 Image successfully uploaded to ImageBB: {image_url}")
+        else:
+            # If upload fails, post text only as a fallback
+            body_html = f'<p>{caption.replace(os.linesep, "<br>")}</p>'
+            send_log(f"⚠️ ImageBB upload failed. Posting text only.")
+        
         body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
         posts = service.posts()
         posts.insert(blogId=BLOG_ID, body=body, isDraft=False).execute()
+        
         update.message.reply_text(f"Success! Post '{title}' published.")
         send_log(f"✅ Success! Post '{title}' published by {update.effective_user.first_name}.")
-        os.remove(photo_path)
+        os.remove(photo_path) # Clean up the temporary local file
+
     except Exception as e:
         update.message.reply_text(f"An error occurred: {e}")
         logger.error(f"Error during posting: {e}")
@@ -105,11 +139,10 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
 
-# --- FLASK WEB SERVER SETUP ---
+# --- FLASK WEB SERVER SETUP (No changes from here down) ---
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
-# THE ONLY CHANGE IS IN THIS BLOCK: persistent=True is removed.
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
