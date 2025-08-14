@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import re # --- NEW: Import re for link processing ---
+import re
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import (
@@ -25,13 +25,13 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 IMAGEBB_API_KEY = os.environ.get("IMAGEBB_API_KEY")
 
-
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
+# --- HELPER FUNCTIONS (No changes here) ---
 def send_log(message: str):
     if LOG_CHANNEL_ID:
         try: bot.send_message(chat_id=LOG_CHANNEL_ID, text=message)
@@ -53,7 +53,6 @@ def upload_to_imagebb(image_path):
     if not IMAGEBB_API_KEY:
         logger.warning("IMAGEBB_API_KEY not set. Cannot upload image.")
         return None
-    
     upload_url = "https://api.imgbb.com/1/upload"
     with open(image_path, "rb") as image_file:
         payload = {"key": IMAGEBB_API_KEY}
@@ -69,7 +68,7 @@ def upload_to_imagebb(image_path):
             return None
     return None
 
-# --- BOT HANDLERS ---
+# --- BOT HANDLERS (No changes here, except get_caption) ---
 GET_TITLE, GET_PHOTO, GET_CAPTION = range(3)
 
 def start(update: Update, context: CallbackContext) -> int:
@@ -97,26 +96,88 @@ def get_caption(update: Update, context: CallbackContext) -> int:
     try:
         service = get_blogger_service()
         if not service:
-            update.message.reply_text("Error: Could not connect to Google. Please check server logs.")
-            send_log("❌ FATAL ERROR! Could not build Google Blogger service. Check credentials.")
+            update.message.reply_text("Error: Could not connect to Google.")
+            send_log("❌ FATAL ERROR! Could not build Google Blogger service.")
             return ConversationHandler.END
 
         caption_text = context.user_data['caption']
         photo_path = context.user_data['photo_path']
 
-        # --- NEW: Process the caption to make links clickable ---
-        # This regex finds URLs and wraps them in <a href="...">...</a> tags
-        caption_with_links = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', caption_text)
-        # This converts newline characters into HTML line breaks
-        final_caption_html = caption_with_links.replace(os.linesep, "<br>")
+        # --- FINAL UPGRADE: Build beautiful HTML with styled buttons ---
+        
+        # This function finds links and turns them into styled buttons
+        def create_styled_buttons(text):
+            # This regex finds http/https links
+            url_pattern = re.compile(r'(https?://\S+)')
+            # Replace found URLs with the button HTML
+            return url_pattern.sub(r'<a href="\1" class="download-button" target="_blank">Download Now</a>', text)
 
-        # --- MODIFIED: Upload photo and build final HTML ---
+        # Process the caption text
+        caption_with_buttons = create_styled_buttons(caption_text)
+        final_caption_html = caption_with_buttons.replace(os.linesep, "<br>")
+
+        # Upload the image
         image_url = upload_to_imagebb(photo_path)
+        
+        # Define CSS styles for the post and buttons
+        style_block = """
+        <style>
+            .post-container {
+                text-align: center;
+                font-family: Arial, sans-serif;
+            }
+            .post-container img {
+                max-width: 100%;
+                height: auto;
+                border-radius: 8px;
+                margin-bottom: 15px;
+            }
+            .post-caption {
+                font-size: 16px;
+                color: #333;
+                line-height: 1.6;
+                padding: 0 10px;
+            }
+            .download-button {
+                display: inline-block;
+                padding: 12px 25px;
+                margin: 10px 5px;
+                font-size: 16px;
+                font-weight: bold;
+                color: #ffffff;
+                background-color: #007bff;
+                border: none;
+                border-radius: 5px;
+                text-decoration: none;
+                transition: background-color 0.3s;
+            }
+            .download-button:hover {
+                background-color: #0056b3;
+            }
+        </style>
+        """
+
         if image_url:
-            body_html = f'<img src="{image_url}" /><br /><p>{final_caption_html}</p>'
+            body_html = f"""
+            {style_block}
+            <div class="post-container">
+                <img src="{image_url}" />
+                <div class="post-caption">
+                    {final_caption_html}
+                </div>
+            </div>
+            """
             send_log(f"📸 Image successfully uploaded to ImageBB: {image_url}")
         else:
-            body_html = f'<p>{final_caption_html}</p>'
+            # Fallback if image upload fails
+            body_html = f"""
+            {style_block}
+            <div class="post-container">
+                <div class="post-caption">
+                    {final_caption_html}
+                </div>
+            </div>
+            """
             send_log(f"⚠️ ImageBB upload failed. Posting text only.")
         
         body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
@@ -138,7 +199,7 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
 
-# --- FLASK WEB SERVER SETUP ---
+# --- FLASK WEB SERVER SETUP (No changes from here down) ---
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
