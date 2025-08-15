@@ -25,13 +25,18 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 IMAGEBB_API_KEY = os.environ.get("IMAGEBB_API_KEY")
 
+# --- NEW: Add your permanent links here ---
+TELEGRAM_CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK")
+INSTAGRAM_LINK = os.environ.get("INSTAGRAM_LINK")
+
+
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- HELPER FUNCTIONS (No changes here) ---
+# --- HELPER FUNCTIONS ---
 def send_log(message: str):
     if LOG_CHANNEL_ID:
         try: bot.send_message(chat_id=LOG_CHANNEL_ID, text=message)
@@ -68,17 +73,18 @@ def upload_to_imagebb(image_path):
             return None
     return None
 
-# --- BOT HANDLERS (No changes here, except get_caption) ---
-GET_TITLE, GET_PHOTO, GET_CAPTION = range(3)
+# --- BOT HANDLERS (NEW CONVERSATION FLOW) ---
+# --- NEW STATES: Added GET_PHOTO and GET_LINKS ---
+GET_TITLE, GET_PHOTO, GET_CAPTION, GET_LINKS = range(4)
 
 def start(update: Update, context: CallbackContext) -> int:
     send_log(f"ℹ️ New conversation started by {update.effective_user.first_name}.")
-    update.message.reply_text("Hi! Let's create a new blog post. What is the title?\nSend /cancel to stop.")
+    update.message.reply_text("Hi! Let's create a new post.\n\nFirst, what is the title?")
     return GET_TITLE
 
 def get_title(update: Update, context: CallbackContext) -> int:
     context.user_data['title'] = update.message.text
-    update.message.reply_text(f"Title: '{context.user_data['title']}'.\nNow, send the photo.")
+    update.message.reply_text(f"Great! Title is set.\n\nNow, please send the photo for the post.")
     return GET_PHOTO
 
 def get_photo(update: Update, context: CallbackContext) -> int:
@@ -86,13 +92,21 @@ def get_photo(update: Update, context: CallbackContext) -> int:
     photo_path = f"{photo_file.file_id}.jpg"
     photo_file.download(photo_path)
     context.user_data['photo_path'] = photo_path
-    update.message.reply_text("Photo received. Now, what's the caption? You can include links.")
+    update.message.reply_text("Photo received.\n\nNext, send the caption (the text description).")
     return GET_CAPTION
 
 def get_caption(update: Update, context: CallbackContext) -> int:
     context.user_data['caption'] = update.message.text
-    title = context.user_data['title']
+    update.message.reply_text("Caption saved.\n\nFinally, send the video link(s). You can send one or multiple links in one message.")
+    return GET_LINKS
+
+# --- This is the FINAL function that builds and creates the post ---
+def create_post(update: Update, context: CallbackContext) -> int:
+    links_text = update.message.text
+    title = context.user_data.get('title', 'No Title')
+    
     update.message.reply_text(f"Got it! Publishing '{title}' to your blog...")
+    
     try:
         service = get_blogger_service()
         if not service:
@@ -100,85 +114,59 @@ def get_caption(update: Update, context: CallbackContext) -> int:
             send_log("❌ FATAL ERROR! Could not build Google Blogger service.")
             return ConversationHandler.END
 
-        caption_text = context.user_data['caption']
-        photo_path = context.user_data['photo_path']
+        caption_text = context.user_data.get('caption', '')
+        photo_path = context.user_data.get('photo_path')
 
-        # --- FINAL UPGRADE: Build beautiful HTML with styled buttons ---
+        # --- DYNAMIC LINK & BUTTON CREATION ---
+        # Find all URLs in the links message
+        urls = re.findall(r'https?://\S+', links_text)
         
-        # This function finds links and turns them into styled buttons
-        def create_styled_buttons(text):
-            # This regex finds http/https links
-            url_pattern = re.compile(r'(https?://\S+)')
-            # Replace found URLs with the button HTML
-            return url_pattern.sub(r'<a href="\1" class="download-button" target="_blank">Download Now</a>', text)
+        dynamic_buttons_html = ""
+        if len(urls) == 1:
+            # If there's only one link, label it "Video"
+            dynamic_buttons_html = f'<a href="{urls[0]}" class="video-button" target="_blank">🎬 Watch Video</a>'
+        elif len(urls) > 1:
+            # If multiple links, label them "Video 1", "Video 2", etc.
+            for i, url in enumerate(urls):
+                dynamic_buttons_html += f'<a href="{url}" class="video-button" target="_blank">🎬 Watch Video {i + 1}</a>'
 
-        # Process the caption text
-        caption_with_buttons = create_styled_buttons(caption_text)
-        final_caption_html = caption_with_buttons.replace(os.linesep, "<br>")
+        # --- STATIC FOOTER BUTTON CREATION ---
+        footer_buttons_html = ""
+        if TELEGRAM_CHANNEL_LINK:
+            footer_buttons_html += f'<a href="{TELEGRAM_CHANNEL_LINK}" class="social-button telegram" target="_blank">Join All Channels</a>'
+        if INSTAGRAM_LINK:
+            footer_buttons_html += f'<a href="{INSTAGRAM_LINK}" class="social-button instagram" target="_blank">Follow on Instagram</a>'
 
-        # Upload the image
+        # --- UPLOAD IMAGE AND BUILD FINAL HTML ---
         image_url = upload_to_imagebb(photo_path)
         
         # Define CSS styles for the post and buttons
         style_block = """
         <style>
-            .post-container {
-                text-align: center;
-                font-family: Arial, sans-serif;
+            .post-container { text-align: center; font-family: sans-serif; }
+            .post-container img { max-width: 100%; height: auto; border-radius: 12px; margin-bottom: 20px; }
+            .post-caption { font-size: 1.1em; color: #444; line-height: 1.6; padding: 0 10px; margin-bottom: 25px; }
+            .button-container { margin-bottom: 30px; }
+            .video-button, .social-button {
+                display: inline-block; padding: 12px 28px; margin: 8px; font-size: 16px; font-weight: bold; color: #ffffff;
+                border: none; border-radius: 8px; text-decoration: none; transition: transform 0.2s;
             }
-            .post-container img {
-                max-width: 100%;
-                height: auto;
-                border-radius: 8px;
-                margin-bottom: 15px;
-            }
-            .post-caption {
-                font-size: 16px;
-                color: #333;
-                line-height: 1.6;
-                padding: 0 10px;
-            }
-            .download-button {
-                display: inline-block;
-                padding: 12px 25px;
-                margin: 10px 5px;
-                font-size: 16px;
-                font-weight: bold;
-                color: #ffffff;
-                background-color: #007bff;
-                border: none;
-                border-radius: 5px;
-                text-decoration: none;
-                transition: background-color 0.3s;
-            }
-            .download-button:hover {
-                background-color: #0056b3;
-            }
+            .video-button:hover, .social-button:hover { transform: scale(1.05); }
+            .video-button { background-color: #ff4500; } /* OrangeRed */
+            .social-button.telegram { background-color: #0088cc; } /* Telegram Blue */
+            .social-button.instagram { background: #d6249f; background: radial-gradient(circle at 30% 107%, #fdf497 0%, #fdf497 5%, #fd5949 45%,#d6249f 60%,#285AEB 90%); }
         </style>
         """
 
-        if image_url:
-            body_html = f"""
-            {style_block}
-            <div class="post-container">
-                <img src="{image_url}" />
-                <div class="post-caption">
-                    {final_caption_html}
-                </div>
-            </div>
-            """
-            send_log(f"📸 Image successfully uploaded to ImageBB: {image_url}")
-        else:
-            # Fallback if image upload fails
-            body_html = f"""
-            {style_block}
-            <div class="post-container">
-                <div class="post-caption">
-                    {final_caption_html}
-                </div>
-            </div>
-            """
-            send_log(f"⚠️ ImageBB upload failed. Posting text only.")
+        body_html = f"""
+        {style_block}
+        <div class="post-container">
+            <img src="{image_url if image_url else ''}" />
+            <div class="post-caption">{caption_text.replace(os.linesep, "<br>")}</div>
+            <div class="button-container">{dynamic_buttons_html}</div>
+            <div class="footer-container">{footer_buttons_html}</div>
+        </div>
+        """
         
         body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
         posts = service.posts()
@@ -199,8 +187,9 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
 
-# --- FLASK WEB SERVER SETUP (No changes from here down) ---
+# --- FLASK WEB SERVER SETUP ---
 app = Flask(__name__)
+# The dispatcher needs to be configured with the new states
 dispatcher = Dispatcher(bot, None, use_context=True)
 
 conv_handler = ConversationHandler(
@@ -209,6 +198,7 @@ conv_handler = ConversationHandler(
         GET_TITLE: [MessageHandler(Filters.text & ~Filters.command, get_title)],
         GET_PHOTO: [MessageHandler(Filters.photo, get_photo)],
         GET_CAPTION: [MessageHandler(Filters.text & ~Filters.command, get_caption)],
+        GET_LINKS: [MessageHandler(Filters.text & ~Filters.command, create_post)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
     name="blogger_conversation"
