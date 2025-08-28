@@ -72,7 +72,6 @@ def upload_to_imagebb(image_path):
 
 # --- Reusable function to create the blog post HTML ---
 def build_blog_post_html(image_url, caption_text, links_list):
-    # DYNAMIC LINK & BUTTON CREATION
     dynamic_buttons_html = ""
     if len(links_list) == 1:
         dynamic_buttons_html = f'<a href="{links_list[0]}" class="video-button" target="_blank">🎬 Watch Video</a>'
@@ -80,7 +79,6 @@ def build_blog_post_html(image_url, caption_text, links_list):
         for i, url in enumerate(links_list):
             dynamic_buttons_html += f'<a href="{url}" class="video-button" target="_blank">🎬 Watch Video {i + 1}</a>'
 
-    # STATIC FOOTER BUTTON CREATION
     footer_buttons_html = ""
     if TELEGRAM_CHANNEL_LINK:
         footer_buttons_html += f'<a href="{TELEGRAM_CHANNEL_LINK}" class="social-button telegram" target="_blank">Join All Channels</a>'
@@ -93,7 +91,6 @@ def build_blog_post_html(image_url, caption_text, links_list):
 
 # --- NEW: Handler for automated channel posts ---
 def channel_post_handler(update: Update, context: CallbackContext):
-    # Ensure the post is from one of our source channels and has a photo
     if update.channel_post.chat_id not in SOURCE_CHANNEL_IDS or not update.channel_post.photo:
         return
 
@@ -101,21 +98,18 @@ def channel_post_handler(update: Update, context: CallbackContext):
     
     full_caption = update.channel_post.caption or ""
     
-    # Extract only TinyURL and Terabox links
     valid_urls = re.findall(r'https?://(?:tinyurl\.com/\S+|terabox\.com/\S+)', full_caption)
     if not valid_urls:
         send_log("AUTOMATION: Post ignored. No valid TinyURL or Terabox links found.")
         return
 
-    # Smartly extract the main caption by splitting at known footer keywords
-    stop_keywords = ["(BY - @", "Add All Channel", "INSTAGRAM", "Watch Online"]
+    # --- THIS IS THE CORRECTED LINE ---
+    stop_keywords = ["\(BY - @", "Add All Channel", "INSTAGRAM", "Watch Online"]
     caption_parts = re.split('|'.join(stop_keywords), full_caption, 1)
     main_caption = caption_parts[0].strip()
 
-    # Use the first line of the caption as the title, or the full caption if it's short
     title = main_caption.split('\n')[0]
 
-    # Download the photo
     photo_file = update.channel_post.photo[-1].get_file()
     photo_path = f"temp_{photo_file.file_id}.jpg"
     photo_file.download(photo_path)
@@ -208,7 +202,6 @@ def cancel(update: Update, context: CallbackContext) -> int:
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
-# Handler for MANUAL posts
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
@@ -221,8 +214,6 @@ conv_handler = ConversationHandler(
 )
 dispatcher.add_handler(conv_handler)
 
-# --- NEW: Handler for AUTOMATED channel posts ---
-# This listens for any message that is a channel post and contains a photo
 dispatcher.add_handler(MessageHandler(Filters.photo & Filters.chat_type.channel, channel_post_handler))
 
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
