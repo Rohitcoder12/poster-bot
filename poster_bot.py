@@ -26,7 +26,6 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 IMAGEBB_API_KEY = os.environ.get("IMAGEBB_API_KEY")
 TELEGRAM_CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK")
 INSTAGRAM_LINK = os.environ.get("INSTAGRAM_LINK")
-# --- NEW: List of source channels, separated by commas ---
 SOURCE_CHANNEL_IDS_STR = os.environ.get("SOURCE_CHANNEL_IDS", "")
 SOURCE_CHANNEL_IDS = [int(channel_id.strip()) for channel_id in SOURCE_CHANNEL_IDS_STR.split(',') if channel_id.strip()]
 
@@ -89,53 +88,79 @@ def build_blog_post_html(image_url, caption_text, links_list):
 
     return f"""{style_block}<div class="post-container"><img src="{image_url if image_url else ''}" /><div class="post-caption">{caption_text.replace(os.linesep, "<br>")}</div><div class="button-container">{dynamic_buttons_html}</div><div class="footer-container">{footer_buttons_html}</div></div>"""
 
-# --- NEW: Handler for automated channel posts ---
-def channel_post_handler(update: Update, context: CallbackContext):
-    if update.channel_post.chat_id not in SOURCE_CHANNEL_IDS or not update.channel_post.photo:
-        return
-
-    send_log(f"AUTOMATION: Detected new post in channel {update.channel_post.chat.title} ({update.channel_post.chat_id}).")
-    
-    full_caption = update.channel_post.caption or ""
-    
-    valid_urls = re.findall(r'https?://(?:tinyurl\.com/\S+|terabox\.com/\S+)', full_caption)
-    if not valid_urls:
-        send_log("AUTOMATION: Post ignored. No valid TinyURL or Terabox links found.")
-        return
-
-    # --- THIS IS THE CORRECTED LINE ---
-    stop_keywords = ["\(BY - @", "Add All Channel", "INSTAGRAM", "Watch Online"]
-    caption_parts = re.split('|'.join(stop_keywords), full_caption, 1)
-    main_caption = caption_parts[0].strip()
-
-    title = main_caption.split('\n')[0]
-
-    photo_file = update.channel_post.photo[-1].get_file()
-    photo_path = f"temp_{photo_file.file_id}.jpg"
-    photo_file.download(photo_path)
-
+# --- CENTRALIZED POSTING LOGIC ---
+def process_and_publish_post(context: CallbackContext, title: str, caption_text: str, photo_path: str, links_list: list, user_name: str, source: str):
+    """A single function to handle image upload and blog posting."""
     try:
         service = get_blogger_service()
         if not service:
-            send_log("❌ AUTOMATION ERROR! Could not build Google Blogger service.")
+            send_log(f"❌ {source.upper()} ERROR! Could not build Google Blogger service.")
+            if source == 'manual': context.bot.send_message(chat_id=context.user_data['chat_id'], text="Error: Could not connect to Google.")
             return
 
         image_url = upload_to_imagebb(photo_path)
-        body_html = build_blog_post_html(image_url, main_caption, valid_urls)
+        body_html = build_blog_post_html(image_url, caption_text, links_list)
         
         body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
         posts = service.posts()
         posts.insert(blogId=BLOG_ID, body=body, isDraft=False).execute()
         
-        send_log(f"✅ AUTOMATION SUCCESS! Post '{title}' published from channel {update.channel_post.chat.title}.")
+        send_log(f"✅ {source.upper()} SUCCESS! Post '{title}' published by {user_name}.")
+        if source == 'manual': context.bot.send_message(chat_id=context.user_data['chat_id'], text=f"Success! Post '{title}' published.")
+
     except Exception as e:
-        send_log(f"❌ AUTOMATION ERROR! Failed to post '{title}'.\nError: {e}")
+        send_log(f"❌ {source.upper()} ERROR! Failed to post '{title}'.\nError: {e}")
+        if source == 'manual': context.bot.send_message(chat_id=context.user_data['chat_id'], text=f"An error occurred: {e}")
     finally:
         if os.path.exists(photo_path):
             os.remove(photo_path)
 
-# --- MANUAL POSTING BOT HANDLERS (Conversation Flow) ---
-GET_TITLE, GET_PHOTO, GET_CAPTION, GET_LINKS = range(4)
+# --- AUTOMATED CHANNEL POST HANDLER ---
+def channel_post_handler(update: Update, context: CallbackContext):
+    post = update.channel_post
+    # Check if the post is from a source channel and has a photo or video
+    if post.chat_id not in SOURCE_CHANNEL_IDS or not (post.photo or post.video):
+        return
+
+    send_log(f"AUTOMATION: Detected new media in channel {post.chat.title} ({post.chat_id}).")
+    
+    # --- UPGRADED LOGIC to handle Photo or Video Thumbnail ---
+    if post.video:
+        media_file = post.video.thumb.get_file()
+    else: # It's a photo
+        media_file = post.photo[-1].get_file()
+        
+    full_caption = post.caption or ""
+    
+    # Extract only TinyURL and Terabox links
+    valid_urls = re.findall(r'https?://(?:tinyurl\.com/\S+|terabox\.com/\S+)', full_caption)
+    if not valid_urls:
+        send_log("AUTOMATION: Post ignored. No valid TinyURL or Terabox links found.")
+        return
+
+    # --- UPGRADED CAPTION PARSING ---
+    # Define keywords that mark the end of the main caption
+    stop_keywords = ["Full Video", r"\(BY - @", "👉", "Watch Online", r"https?://"]
+    # This splits the caption at the *first* occurrence of any stop keyword
+    caption_parts = re.split('|'.join(stop_keywords), full_caption, 1, flags=re.IGNORECASE)
+    main_caption = caption_parts[0].strip()
+
+    if not main_caption:
+        send_log("AUTOMATION: Post ignored. Could not extract a valid caption.")
+        return
+
+    # Use the first line of the caption as the title
+    title = main_caption.split('\n')[0].strip()
+
+    # Download the photo/thumbnail
+    photo_path = f"temp_{media_file.file_id}.jpg"
+    media_file.download(photo_path)
+
+    # Use the centralized function to publish the post
+    process_and_publish_post(context, title, main_caption, photo_path, valid_urls, user_name=f"Channel '{post.chat.title}'", source="automation")
+
+# --- MANUAL POSTING BOT HANDLERS ---
+GET_TITLE, GET_PHOTO_OR_VIDEO, GET_CAPTION, GET_LINKS = range(4)
 
 def start(update: Update, context: CallbackContext) -> int:
     send_log(f"MANUAL: New conversation started by {update.effective_user.first_name}.")
@@ -144,15 +169,21 @@ def start(update: Update, context: CallbackContext) -> int:
 
 def get_title(update: Update, context: CallbackContext) -> int:
     context.user_data['title'] = update.message.text
-    update.message.reply_text("Title set. Now, please send the photo.")
-    return GET_PHOTO
+    update.message.reply_text("Title set. Now, please send the photo or video.")
+    return GET_PHOTO_OR_VIDEO
 
-def get_photo(update: Update, context: CallbackContext) -> int:
-    photo_file = update.message.photo[-1].get_file()
-    photo_path = f"temp_{photo_file.file_id}.jpg"
-    photo_file.download(photo_path)
+def get_photo_or_video(update: Update, context: CallbackContext) -> int:
+    # UPGRADED: Handle both photo and video for manual posts
+    if update.message.video:
+        media_file = update.message.video.thumb.get_file()
+    else: # It's a photo
+        media_file = update.message.photo[-1].get_file()
+        
+    photo_path = f"temp_{media_file.file_id}.jpg"
+    media_file.download(photo_path)
     context.user_data['photo_path'] = photo_path
-    update.message.reply_text("Photo received. Next, send the caption.")
+    context.user_data['chat_id'] = update.effective_chat.id # Store chat_id for later replies
+    update.message.reply_text("Media received. Next, send the caption.")
     return GET_CAPTION
 
 def get_caption(update: Update, context: CallbackContext) -> int:
@@ -163,34 +194,16 @@ def get_caption(update: Update, context: CallbackContext) -> int:
 def create_manual_post(update: Update, context: CallbackContext) -> int:
     links_text = update.message.text
     title = context.user_data.get('title', 'No Title')
+    caption_text = context.user_data.get('caption', '')
+    photo_path = context.user_data.get('photo_path')
+    valid_urls = re.findall(r'https?://\S+', links_text)
+    user_name = update.effective_user.first_name
+
     update.message.reply_text(f"Got it! Publishing '{title}' to your blog...")
     
-    try:
-        service = get_blogger_service()
-        if not service:
-            update.message.reply_text("Error: Could not connect to Google.")
-            send_log("❌ MANUAL ERROR! Could not build Google Blogger service.")
-            return ConversationHandler.END
-
-        caption_text = context.user_data.get('caption', '')
-        photo_path = context.user_data.get('photo_path')
-        valid_urls = re.findall(r'https?://\S+', links_text)
-
-        image_url = upload_to_imagebb(photo_path)
-        body_html = build_blog_post_html(image_url, caption_text, valid_urls)
-        
-        body = {"kind": "blogger#post", "blog": {"id": BLOG_ID}, "title": title, "content": body_html}
-        posts = service.posts()
-        posts.insert(blogId=BLOG_ID, body=body, isDraft=False).execute()
-        
-        update.message.reply_text(f"Success! Post '{title}' published.")
-        send_log(f"✅ MANUAL SUCCESS! Post '{title}' published by {update.effective_user.first_name}.")
-    except Exception as e:
-        update.message.reply_text(f"An error occurred: {e}")
-        send_log(f"❌ MANUAL ERROR! Failed to post '{title}'.\nError: {e}")
-    finally:
-        if os.path.exists(photo_path):
-            os.remove(photo_path)
+    # Use the centralized function to publish the post
+    process_and_publish_post(context, title, caption_text, photo_path, valid_urls, user_name, source="manual")
+    
     return ConversationHandler.END
 
 def cancel(update: Update, context: CallbackContext) -> int:
@@ -202,11 +215,12 @@ def cancel(update: Update, context: CallbackContext) -> int:
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
+# Handler for MANUAL posts
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
         GET_TITLE: [MessageHandler(Filters.text & ~Filters.command, get_title)],
-        GET_PHOTO: [MessageHandler(Filters.photo, get_photo)],
+        GET_PHOTO_OR_VIDEO: [MessageHandler(Filters.photo | Filters.video, get_photo_or_video)],
         GET_CAPTION: [MessageHandler(Filters.text & ~Filters.command, get_caption)],
         GET_LINKS: [MessageHandler(Filters.text & ~Filters.command, create_manual_post)],
     },
@@ -214,7 +228,8 @@ conv_handler = ConversationHandler(
 )
 dispatcher.add_handler(conv_handler)
 
-dispatcher.add_handler(MessageHandler(Filters.photo & Filters.chat_type.channel, channel_post_handler))
+# --- UPGRADED: Handler for AUTOMATED channel posts (listens for photo OR video) ---
+dispatcher.add_handler(MessageHandler((Filters.photo | Filters.video) & Filters.chat_type.channel, channel_post_handler))
 
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
@@ -230,6 +245,6 @@ if __name__ == "__main__":
     if WEBHOOK_URL:
         bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
         logger.info(f"Webhook set to {WEBHOOK_URL}")
-        send_log("🚀 Bot has been deployed/restarted with channel monitoring.")
+        send_log("🚀 Bot has been deployed/restarted with FULL automation features.")
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
